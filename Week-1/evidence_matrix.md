@@ -1,8 +1,8 @@
 # SC452 Cloud Computing Case Study — Evidence Matrix: Freshworks Inc.
 
-**Course:** SC452: Processes on Networks / Cloud Computing Case Study  
+**Course:** Cloud Computing Case Study  
 **Topic:** Freshworks — Scaling Global SaaS from India on AWS Infrastructure  
-**Author:** Jayaditya Shah (Student ID: 202301254)  
+**Author:** Maharshi Patel  (Student ID: 202301486)  
 **Date:** October 14, 2026  
 
 ---
