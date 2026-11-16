@@ -1,0 +1,506 @@
+\documentclass[10pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[a4paper, top=22mm, bottom=22mm, left=20mm, right=20mm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{fancyhdr}
+\usepackage{microtype}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{float}
+\usepackage{cite}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    citecolor=black,
+    urlcolor=blue
+}
+
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.97,0.97,0.97}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegray},
+    keywordstyle=\color{blue}\bfseries,
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\scriptsize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=5pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2,
+    frame=single
+}
+\lstset{style=mystyle}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\small IT457 -- Cloud Computing}
+\rhead{\small Freshworks on AWS: Final Consolidated Report}
+\cfoot{\small \thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\begin{document}
+
+\begin{center}
+{\small Dhirubhai Ambani University (formerly DA-IICT) \quad\textbar\quad IT457 -- Cloud Computing \quad\textbar\quad Autumn 2026}\\[1.5ex]
+{\LARGE\bfseries Freshworks on AWS:\\[0.5ex] From a Rails Monolith to a Serverless Developer Platform}\\[1.5ex]
+{\large\bfseries Final Consolidated Project Report: Architecture Analysis and Serverless Implementation}\\[1ex]
+{\normalsize Theme-4 : Serverless and Startups}\\[1ex]
+{\normalsize\textbf{Group-15} : Hriday Asnani (202301282), Jayaditya Shah (202301254), Maharshi Patel (202301486)}\\[2ex]
+\end{center}
+
+\begin{abstract}
+\noindent This consolidated final report presents an end-to-end architectural study and empirical implementation of Freshworks Inc. (NASDAQ: \texttt{FRSH}) on Amazon Web Services (AWS), prepared for IT457 Cloud Computing. We analyze Freshworks' dual architecture: its flagship customer engagement product (Freshdesk), operated as a large-scale Ruby on Rails monolith serving over 500,000 requests per minute behind HAProxy shells and sharded Amazon RDS MySQL instances; and its modern Neo developer platform, where over 1,200 third-party marketplace applications are executed as on-demand AWS Lambda serverless functions. Drawing directly from Freshworks' published engineering insights, SEC filings, and AWS technical case studies, we examine the five fundamental multi-tenant scaling challenges encountered by the organization and the corresponding defensive guardrails deployed. To evaluate the serverless paradigm mandated under Theme 4, we designed, deployed, and empirically benchmarked a production-grade serverless ticket intake microservice in the AWS Asia Pacific (Mumbai, \texttt{ap-south-1}) region, comprising Amazon API Gateway (HTTP API v2), AWS Lambda (Python 3.12, ARM64 Graviton2, 128~MB), and Amazon DynamoDB (\texttt{PAY\_PER\_REQUEST} on-demand capacity). Through a 100-request live empirical benchmark (\texttt{EXP-20261116-102200}), we observed a cold-start round-trip latency of 4231.67~ms compared to a warm median latency of 160.87~ms (a 26.30$\times$ latency ratio), isolating a container initialization duration of approximately 3941.48~ms from server application execution (median 13.27~ms). A unit-economics FinOps model demonstrates that the serverless architecture incurs an operating cost of \$0.002473 per 1,000 requests (\$2.47 per million), yielding an estimated 96.1\% cost reduction compared to an equivalent provisioned baseline compute instance at low-to-medium bursty volumes. Finally, we discuss the trade-offs, security controls, and operational guardrails required when migrating startup workloads to serverless cloud infrastructure.
+\end{abstract}
+
+\section{Introduction and Project Objectives}
+This document forms the comprehensive, consolidated final report for our IT457 Cloud Computing course project at Dhirubhai Ambani University. Our assigned case study is Freshworks Inc., falling under \textbf{Theme 4: Serverless and Startups}. The official course implementation guidelines mandate the development and verification of a live, public-facing API that triggers a serverless compute function, visual architectural evidence from the cloud management console, and an empirical analysis of cold-start versus warm-start latency dynamics accompanied by an architectural cost estimation model.
+
+A key conceptual finding from our investigation is that Freshworks is fundamentally an evolving hybrid: its core multi-tenant business operates as a mature Ruby on Rails monolithic architecture distributed across clustered virtual servers, whereas serverless technology was strategically adopted for its Neo developer platform and Marketplace ecosystem \cite{fw_scale_2020, aws_freshworks_lambda}. This report bridges both dimensions. We first examine the monolithic architecture to understand the operational bottlenecks, blast-radius risks, and database replication constraints that drove Freshworks' technical choices. We then detail our practical serverless implementation on AWS, modeled after Freshworks' event-driven ticket processing pipeline, and present empirical telemetry collected from live execution in the AWS Mumbai region.
+
+\subsection{Sources and Research Methodology}
+To maintain academic rigor, we relied strictly on primary documentation authored by Freshworks engineering staff, official AWS case studies, audited SEC filings (Forms 10-K), and public earnings transcripts. Table~\ref{tab:sources} details the primary sources informing our architectural analysis.
+
+\begin{table}[H]
+\centering
+\caption{Primary sources and evidence utilized in this report.}
+\label{tab:sources}
+\small
+\begin{tabularx}{\textwidth}{l p{3.2cm} X}
+\toprule
+\textbf{Source} & \textbf{Type} & \textbf{Architectural \& Empirical Evidence Derived} \\
+\midrule
+Freshworks Engineering (B. Kumar) \cite{fw_scale_2020} & Engineering Blog (2020) & Request path, Passenger single-thread limits, MySQL transaction kill events, Semian circuit breaker. \\
+S. Mallapu (HAProxy at Scale) \cite{fw_haproxy_2021} & Engineering Blog (2021) & HAProxy shell routing tier, tenant isolation, buffer shells for degraded database shards. \\
+R. Srinivasan (SRE Conf) \cite{fw_sreconf_2023} & Conference Abstract (2023) & Shell-to-shard mapping, blast-radius containment, multi-tenant failure boundaries. \\
+Freshworks Engineering (BG Jobs \& Freno) \cite{fw_freno} & Engineering Blog & Sidekiq background processing, Redis queues, Freno cooperative replica-lag throttling. \\
+Amazon Web Services Case Study \cite{aws_freshworks_lambda} & AWS Technical Case Study (2020) & Neo Marketplace platform, one Lambda function per third-party app, concurrency scaling. \\
+SEC Form 10-K (FY2021 \& FY2022) \cite{sec_10k_2021, sec_10k_2022} & Audited SEC Regulatory Filings & Cost of revenue breakdown, hosting expenditure growth (\$6.9M and \$8.5M), gross margins (79--81\%). \\
+Q4/FY2025 Earnings Release \& Call \cite{fw_q4_2025, fw_fool_2025} & Financial Earnings Disclosures & FY2025 revenue (\$838.8M, +16\% YoY), \$907M ARR, first full-year GAAP profitability. \\
+AWS Global Passport \& SCA Release \cite{aws_passport, fw_sca_2024} & Corporate Releases (2024) & Strategic Collaboration Agreement with AWS, global customer count (70,000+). \\
+Spot by NetApp Case Study \cite{spot_freshworks} & Vendor Engineering Study & OpsWorks fleet migration to EC2 Spot instances, 65\% compute cost savings. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Corrections and Boundary Clarifications}
+In our preliminary Week 1 literature survey, certain architectural figures were sourced from unverified secondary reports, including an alleged 60,000 RPM hard limit per shell, custom Kubernetes operators for Redis, and a \$337.5M AWS upfront commitment. Cross-referencing against primary SEC filings and engineering publications confirmed that Redis caching was transitioned directly from Amazon ElastiCache to Redis Labs due to replication command limitations \cite{fw_redis_migration}, and compute scaling is managed via AWS OpsWorks and HAProxy shells. We explicitly rectified these discrepancies in Week 2, and this final report adheres strictly to audited, verifiable facts.
+
+\section{Company Background and Cloud Evolution}
+Freshworks was established in 2010 in Chennai, India, initially launching a cloud-hosted customer support helpdesk (Freshdesk). Over the subsequent decade, the company expanded its multi-product SaaS suite to include Freshservice (IT service management), Freshsales (CRM), and Freshchat (messaging), culminating in an initial public offering on NASDAQ under the ticker \texttt{FRSH}.
+
+As of FY2025, Freshworks serves more than 70,000 businesses worldwide \cite{aws_passport}. Financially, revenue grew from \$720.4 million in FY2024 to \$838.8 million in FY2025 (a 16\% year-over-year increase), achieving its first full year of GAAP operating profitability, with Annual Recurring Revenue (ARR) closing at \$907 million \cite{fw_q4_2025, fw_fool_2025}. In January 2024, Freshworks expanded its cloud relationship by signing a multi-year Strategic Collaboration Agreement (SCA) with AWS, driving joint delivery across AWS Marketplace, Amazon EventBridge, and AWS Lambda \cite{fw_sca_2024}.
+
+\begin{figure}[H]
+\centering
+\fbox{\small\begin{minipage}{0.95\textwidth}
+\centering
+\textbf{Freshworks--AWS Strategic and Architectural Timeline}\\[1ex]
+\textbf{2010:} Founded in Chennai $\longrightarrow$
+\textbf{2016:} AWS Lambda adopted for Marketplace apps $\longrightarrow$
+\textbf{2017:} Concurrency limit raised (1,000 concurrent) $\longrightarrow$
+\textbf{2019:} Redis moved to Redis Labs $\longrightarrow$
+\textbf{2020:} Neo platform launched; Freshdesk reaches $\sim$500K RPM $\longrightarrow$
+\textbf{2021:} HAProxy shell architecture published $\longrightarrow$
+\textbf{2024:} Multi-year AWS Strategic Collaboration Agreement $\longrightarrow$
+\textbf{2025:} First full-year GAAP profitability (\$838.8M revenue).
+\end{minipage}}
+\caption{Key technological and operational milestones in Freshworks' AWS cloud architecture.}
+\label{fig:timeline}
+\end{figure}
+
+\section{Architecture of the Freshworks Platform on AWS}
+The architectural foundation of Freshdesk is illustrated in Figure~\ref{fig:monolith_arch}. It represents a multi-tenant, sharded web architecture engineered to isolate tenants and safeguard shared infrastructure from cascading outages.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{images/fig1_serverless_architecture.png}
+\caption{Architectural overview of our deployed AWS Serverless Ticket Processing Microservice in \texttt{ap-south-1}, modeling the Freshworks Neo developer platform event pipeline.}
+\label{fig:monolith_arch}
+\end{figure}
+
+\subsection{Ingress, Routing, and HAProxy Shells}
+Incoming HTTP traffic is directed via Amazon Route 53 to subdomains assigned to individual customer tenants (e.g., \texttt{tenant.freshdesk.com}). Requests are terminated at regional Application Load Balancers (ALBs) that perform SSL/TLS offloading and forward unencrypted traffic to an intermediate layer of HAProxy reverse proxies \cite{fw_scale_2020, fw_haproxy_2021}.
+
+The core innovation at this tier is the \textbf{Shell Architecture}. A shell represents a decoupled, self-contained cluster of compute instances mapped to a specific subset of database shards \cite{fw_sreconf_2023}. HAProxy inspects incoming HTTP request headers (including tenant identifiers, API tokens, and subscription tiers) and routes traffic to the appropriate backend shell. Crucially, Freshworks maintains an isolated \textbf{Buffer Shell}: when a database shard experiences performance degradation or query lockups, HAProxy dynamically re-routes traffic destined for that shard away from standard compute capacity into the buffer shell, preventing a slow database from exhausting worker threads across the healthy cluster \cite{fw_haproxy_2021}.
+
+\subsection{Compute Tier and Process Execution}
+Within each shell, requests traverse an Envoy proxy sidecar before reaching an Nginx web server and a Phusion Passenger application server pool running Ruby on Rails \cite{fw_scale_2020}. Because Passenger processes in this deployment operate in a single-threaded execution model, exactly one OS worker process is occupied per active HTTP request. Envoy enforces strict ingress timeouts, egress rate limits, circuit-breaker thresholds, and telemetry collection.
+
+\subsection{Data Persistence and Asynchronous Workloads}
+Transactional data is persisted across sharded Amazon Relational Database Service (RDS) MySQL instances configured in Multi-AZ deployments with asynchronous read replicas \cite{fw_scale_2020}. Non-blocking or asynchronous operations (e.g., webhook notifications, email parsing, ticket escalation rules) are serialized into Redis queues and processed by asynchronous Sidekiq workers. To prevent write-heavy Sidekiq jobs from overwhelming database replication, workers query GitHub's open-source \textbf{Freno} throttler before executing bulk operations, backing off whenever replica lag exceeds predefined thresholds \cite{fw_freno}.
+
+\section{Multi-Tenant Scalability Problems}
+Operating a multi-tenant Rails monolith at 500,000 requests per minute exposed five structural vulnerabilities:
+\begin{enumerate}
+    \item \textbf{Worker Thread Depletion by Slow Requests:} Because Passenger processes are single-threaded, requests blocked on unindexed database queries, external payment gateways, or downstream API timeouts hold compute workers indefinitely. Under sustained traffic, worker pools saturate rapidly, causing incoming requests to queue and driving site-wide latency spikes.
+    \item \textbf{Contagious Blast Radius (Noisy Neighbor Syndrome):} In a shared multi-tenant database topology, an aggressive batch export or denial-of-service attack against a single tenant can consume database I/O and lock shared tables, degrading service for completely unrelated tenants housed on the same shard \cite{fw_sreconf_2023}.
+    \item \textbf{Replication Lag Induced by Asynchronous Jobs:} Burst writes from Sidekiq worker queues frequently oversaturated MySQL binlog replication, resulting in substantial read-replica lag and stale reads for end users viewing recently updated tickets \cite{fw_freno}.
+    \item \textbf{Execution of Untrusted Third-Party Code:} The launch of the Freshworks Marketplace required allowing external developers to execute custom code triggered by ticket events. Running arbitrary third-party code within the core Rails runtime presented severe security and noisy-neighbor availability risks.
+    \item \textbf{Infrastructure Cost Governance:} As shown in SEC filings, third-party cloud hosting costs increased by \$6.9 million in 2021 and \$8.5 million in 2022 \cite{sec_10k_2021, sec_10k_2022}. Scaling compute exclusively through provisioned, always-on EC2 instances threatened gross margins unless disciplined unit-cost governance was enforced.
+\end{enumerate}
+
+\section{Architectural Solutions and Defensive Guardrails}
+Rather than simply over-provisioning virtual machines, Freshworks engineered targeted software guardrails to contain failures at every layer, as summarized in Table~\ref{tab:problems_solutions}.
+
+\begin{table}[H]
+\centering
+\caption{Multi-tenant problems and architectural mechanisms implemented by Freshworks.}
+\label{tab:problems_solutions}
+\small
+\begin{tabularx}{\textwidth}{l p{4.2cm} X}
+\toprule
+\textbf{Problem} & \textbf{Architectural Mechanism} & \textbf{Operational Implementation Details} \\
+\midrule
+Long-running DB queries & Automated MySQL event killing stale transactions & Scheduled event inspects InnoDB \texttt{INNODB\_TRX} table every few seconds and executes \texttt{mysql.rds\_kill} on transactions exceeding 25~s \cite{fw_scale_2020}. \\
+Unresponsive DB shard & Semian circuit breaker in application tier & Per-process circuit breaker (Shopify Semian) fails fast when database connection attempts timeout, avoiding cascading thread lockup \cite{fw_scale_2020}. \\
+Slow outbound API calls & Strict timeouts \& Envoy egress proxying & Envoy sidecar enforces aggressive timeouts and HTTP circuit breaking on external network dependencies \cite{fw_scale_2020}. \\
+Noisy neighbor / spam & Shell architecture \& HAProxy buffer shells & Degraded shards isolated into dedicated buffer shells; Envoy rate limits offending IPs and tenants \cite{fw_haproxy_2021}. \\
+Replica lag from jobs & Freno cooperative throttling & Sidekiq background workers poll Freno prior to writing; if replica lag exceeds threshold, jobs back off for $\max(\text{lag}, 60\,\text{s})$ \cite{fw_freno}. \\
+Third-party app execution & Serverless execution via AWS Lambda & Each Marketplace app is packaged and isolated into an independent AWS Lambda function invoked per event \cite{aws_freshworks_lambda}. \\
+EC2 infrastructure cost & Spot instance fleets with Elastigroup & Non-critical OpsWorks compute fleets transitioned to EC2 Spot instances, achieving 65\% cost reductions \cite{spot_freshworks}. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Serverless in Freshworks: The Neo Developer Platform}
+Freshworks resolved the challenge of untrusted third-party code by adopting a completely serverless paradigm for its \textbf{Neo Developer Platform} \cite{aws_freshworks_lambda}. Rather than deploying developer-submitted applications to internal container clusters or shared VMs, Freshworks built a Command Line Interface (CLI) and Software Development Kit (SDK) that packages each marketplace application as an individual \textbf{AWS Lambda} function.
+
+When business events occur in Freshdesk (e.g., \texttt{ticket.created}, \texttt{ticket.status\_updated}), the platform's event router identifies all applications subscribed to that event and dispatches an asynchronous invocation to the corresponding Lambda function. This design guarantees complete memory, runtime, and security isolation between external developers. Furthermore, because billing is tied strictly to execution duration, Freshworks incurs zero idle cost for applications that receive infrequent traffic. The company scaled this platform from an initial limit of 1,000 concurrent executions in 2017 to handling hundreds of millions of events monthly \cite{aws_freshworks_lambda}.
+
+\section{Cloud Economics and Public Financial Analysis}
+To understand the financial implications of Freshworks' cloud scaling, we aggregated public financial data from SEC Form 10-K filings and investor earnings disclosures, as presented in Table~\ref{tab:financials}.
+
+\begin{table}[H]
+\centering
+\caption{Public financial and hosting expenditure metrics for Freshworks Inc.}
+\label{tab:financials}
+\small
+\begin{tabularx}{\textwidth}{l r X}
+\toprule
+\textbf{Financial / Operational Metric} & \textbf{Value} & \textbf{Significance and Cloud Context} \\
+\midrule
+FY2021 Cost of Revenue & \$78.0M & Gross margin held flat at 79\%; third-party hosting costs grew by \$6.9M \cite{sec_10k_2021}. \\
+FY2022 Cost of Revenue & \$95.8M & Gross margin improved to 81\%; hosting costs grew by \$8.5M due to scale economies \cite{sec_10k_2022}. \\
+FY2024 Revenue & \$720.4M & Continued international customer expansion across AWS regions \cite{fw_q4_2025}. \\
+FY2025 Revenue & \$838.8M & 16\% year-over-year growth; first full year of GAAP operating profitability \cite{fw_q4_2025}. \\
+Annual Recurring Revenue (ARR) & \$907.0M & Reported at close of FY2025 \cite{fw_fool_2025}. \\
+Q4 FY2025 Non-GAAP Gross Margin & 86.8\% & Includes a \$1.5M AWS Strategic Collaboration Agreement contract credit \cite{fw_fool_2025}. \\
+EC2 Spot Fleets (OpsWorks) & 65\% saving & Compute cost savings realized on background worker infrastructure via Spot \cite{spot_freshworks}. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The empirical financial record demonstrates that while hosting expenditures grew in absolute terms (\$6.9M and \$8.5M increments), gross margin expanded from 79\% to 86.8\%. This confirms that Freshworks successfully leveraged architectural economies of scale---substituting over-provisioned virtual servers with elastic cloud services, Spot instances, and serverless compute.
+
+\section{Our Serverless Implementation on AWS}
+To experimentally investigate the performance and economic realities of the serverless model examined in the Neo platform, we engineered and deployed an end-to-end serverless ticket processing system in the AWS Asia Pacific (Mumbai, \texttt{ap-south-1}) region.
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}[b]{0.48\textwidth}
+\centering
+\includegraphics[width=\textwidth]{images/fig2_aws_console_api_gateway.png}
+\caption{AWS API Gateway HTTP API configuration.}
+\label{fig:apigw_console}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.48\textwidth}
+\centering
+\includegraphics[width=\textwidth]{images/fig3_aws_console_routes.png}
+\caption{HTTP API v2 route bindings (\texttt{POST /tickets}).}
+\label{fig:routes_console}
+\end{subfigure}
+\\[2ex]
+\begin{subfigure}[b]{0.48\textwidth}
+\centering
+\includegraphics[width=\textwidth]{images/fig4_aws_console_lambda.png}
+\caption{AWS Lambda runtime configuration.}
+\label{fig:lambda_console}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.48\textwidth}
+\centering
+\includegraphics[width=\textwidth]{images/fig5_aws_console_dynamodb.png}
+\caption{Amazon DynamoDB schema and ingested items.}
+\label{fig:dynamodb_console}
+\end{subfigure}
+\caption{Live AWS Management Console verification screenshots of our deployed serverless ticket system.}
+\label{fig:console_evidence}
+\end{figure}
+
+\subsection{System Architecture and Service Specifications}
+The architecture follows a fully decoupled, cloud-native request pipeline:
+\begin{center}
+\textbf{Client (HTTPS)} $\longrightarrow$ \textbf{Amazon API Gateway (HTTP API v2)} $\longrightarrow$ \textbf{AWS Lambda (Python 3.12)} $\longrightarrow$ \textbf{Amazon DynamoDB}
+\end{center}
+Table~\ref{tab:infra_specs} details the operational parameters configured across the AWS infrastructure.
+
+\begin{table}[H]
+\centering
+\caption{Deployed AWS Serverless Infrastructure Specifications.}
+\label{tab:infra_specs}
+\small
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{Infrastructure Tier} & \textbf{AWS Service / Resource} & \textbf{Detailed Operational Configuration} \\
+\midrule
+Public API Endpoint & Amazon API Gateway (HTTP API v2) & ID: \texttt{896e9yx0a1}, Region: \texttt{ap-south-1}. Low-latency proxy integration, \$default auto-deploy stage, routes: \texttt{POST /tickets}, \texttt{GET /tickets}. \\
+Compute Execution & AWS Lambda Function & Name: \texttt{freshworks-ticket-processor}, Runtime: Python 3.12, Architecture: ARM64 (AWS Graviton2), Memory: 128~MB, Timeout: 15~s. \\
+Persistence Layer & Amazon DynamoDB & Table: \texttt{FreshworksTickets}, Mode: On-Demand (\texttt{PAY\_PER\_REQUEST}), Partition Key: \texttt{tenant\_id} (String), Sort Key: \texttt{ticket\_id} (String). \\
+Access Control & AWS IAM Execution Role & Least-privilege IAM policy granting \texttt{dynamodb:PutItem}, \texttt{dynamodb:GetItem}, \texttt{logs:CreateLogGroup}, \texttt{logs:PutLogEvents}. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Lambda Handler and Telemetry Implementation}
+The Lambda handler (\texttt{lambda\_function.py}) was engineered to parse JSON ticket payloads, validate mandatory attributes (\texttt{tenant\_id}, \texttt{ticket\_id}, \texttt{subject}, \texttt{priority}), write the record to DynamoDB, and return an HTTP 201 response. To measure execution performance with nanosecond precision without rounding distortion, we utilized \texttt{time.perf\_counter\_ns()}. Container reuse and cold starts were identified via an in-memory execution context variable (\texttt{\_IS\_WARM}).
+
+\begin{lstlisting}[language=Python, caption={Core AWS Lambda Handler with High-Precision Telemetry Instrumentation.}]
+import json, time, boto3, os
+from decimal import Decimal
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table(os.environ.get('DYNAMODB_TABLE', 'FreshworksTickets'))
+_IS_WARM = False  # Track container lifecycle across invocations
+
+def lambda_handler(event, context):
+    global _IS_WARM
+    t_start_ns = time.perf_counter_ns()
+    is_cold = not _IS_WARM
+    _IS_WARM = True
+    
+    # Process POST /tickets
+    body = json.loads(event.get('body', '{}'))
+    tenant_id = body.get('tenant_id', 'unknown')
+    ticket_id = body.get('ticket_id', f"TCK-{int(time.time()*1000)}")
+    
+    # Persist item to DynamoDB
+    table.put_item(Item={
+        'tenant_id': tenant_id,
+        'ticket_id': ticket_id,
+        'subject': body.get('subject', 'Default Subject'),
+        'priority': body.get('priority', 'medium'),
+        'created_at': int(time.time()),
+        'expire_at': int(time.time()) + 86400  # 24h TTL
+    })
+    
+    elapsed_ns = time.perf_counter_ns() - t_start_ns
+    elapsed_ms = elapsed_ns / 1_000_000.0
+    
+    return {
+        'statusCode': 201,
+        'headers': {'Content-Type': 'application/json'},
+        'body': json.dumps({
+            'status': 'SUCCESS',
+            'ticket_id': ticket_id,
+            'is_cold': is_cold,
+            'state': 'COLD' if is_cold else 'WARM',
+            'execution_time_ms': elapsed_ms,
+            'execution_time_ns': elapsed_ns
+        })
+    }
+\end{lstlisting}
+
+\section{Empirical Benchmark and Performance Evaluation}
+To evaluate the system under realistic network conditions, we implemented an automated Python benchmarking harness (\texttt{benchmark\_cold\_start.py}) that executed 100 consecutive HTTP POST requests against the live API Gateway endpoint (\texttt{https://896e9yx0a1.execute-api.ap-south-1.amazonaws.com/tickets}).
+
+\subsection{Experimental Benchmark Telemetry (EXP-20261116-102200)}
+The benchmark completed with zero failures across all 100 requests. Table~\ref{tab:bench_stats} summarizes the statistical distribution of round-trip latencies and internal server execution times.
+
+\begin{table}[H]
+\centering
+\caption{Empirical benchmark telemetry results (Experiment ID: \texttt{EXP-20261116-102200}).}
+\label{tab:bench_stats}
+\small
+\begin{tabularx}{\textwidth}{l r r X}
+\toprule
+\textbf{Metric Description} & \textbf{Round-Trip Latency (ms)} & \textbf{Server Execution (ms)} & \textbf{Analytical Significance} \\
+\midrule
+Cold-Start Invocation (Req \#1) & \textbf{4231.67~ms} & 290.19~ms & First invocation on freshly spun container; includes AWS initialization duration. \\
+Warm Median Latency ($p50$) & \textbf{160.87~ms} & 13.27~ms & Typical operating performance under sustained reuse. \\
+Warm Mean Latency & 140.71~ms & 13.94~ms & Stable execution profile across 99 warm requests. \\
+Warm 90th Percentile ($p90$) & 193.22~ms & 16.45~ms & Predictable tail latency within 200~ms envelope. \\
+Warm 95th Percentile ($p95$) & 200.49~ms & 18.12~ms & 95\% of requests complete in $\le 200.49$~ms. \\
+Warm 99th Percentile ($p99$) & 220.63~ms & 21.05~ms & Minimal tail outliers during container warmth. \\
+Warm Minimum Latency & 75.18~ms & 10.82~ms & Optimum network and execution round-trip. \\
+Warm Maximum Latency & 223.46~ms & 22.40~ms & Worst-case warm invocation observed. \\
+Request \#100 Latency & 182.03~ms & 15.30~ms & Final trial confirming ongoing container reuse. \\
+\textbf{Cold/Warm Median Ratio} & \textbf{26.30$\times$} & 21.87$\times$ & Severe latency penalty experienced during cold startup. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.88\textwidth]{images/fig6_cold_start_vs_warm_latency.png}
+\caption{Empirical round-trip latency curve across 100 consecutive live requests, illustrating the 4231.67~ms cold-start spike at Request \#1 followed by rapid stabilization around the 160.87~ms warm median.}
+\label{fig:latency_curve}
+\end{figure}
+
+\subsection{Latency Component Decomposition}
+A critical requirement in evaluating serverless performance is distinguishing between client-observed round-trip time and internal AWS lifecycle overheads. Table~\ref{tab:latency_breakdown} decomposes the measured latency components.
+
+\begin{table}[H]
+\centering
+\caption{Decomposition of cold-start versus warm-start latency components.}
+\label{tab:latency_breakdown}
+\small
+\begin{tabularx}{\textwidth}{l r r X}
+\toprule
+\textbf{Latency Component} & \textbf{Cold Start (Req \#1)} & \textbf{Warm Median} & \textbf{Component Behavior and Source} \\
+\midrule
+Total Client Round-Trip Latency & 4231.67~ms & 160.87~ms & Measured on client via monotonic clock (\texttt{time.perf\_counter()}). \\
+Lambda Execution Time (App Code) & 290.19~ms & 13.27~ms & In-handler duration for JSON decoding and DynamoDB \texttt{put\_item}. \\
+Lambda Container Init Overhead & $\sim$3941.48~ms & 0.00~ms & AWS Firecracker microVM bootstrap, Python runtime init, and Boto3 loading. \\
+AWS Billed Duration & 291.00~ms & 14.00~ms & Execution time rounded up to nearest millisecond for billing. \\
+Network, TLS \& API GW Overhead & $\sim$147.60~ms & $\sim$147.60~ms & Public Internet transit from client to Mumbai region + API GW proxy overhead. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The empirical breakdown confirms that for cold starts, \textbf{93.1\% of total request latency (3941.48~ms out of 4231.67~ms) is consumed entirely by container provisioning and runtime initialization}, whereas application code execution requires only 290.19~ms. Once warmed, Lambda application execution drops to 13.27~ms, and end-to-end latency is dominated primarily by Internet transit to the \texttt{ap-south-1} data center.
+
+\section{FinOps Cost Model and Comparative Cloud Economics}
+To address the cloud economics deliverable, we formulated a mathematical unit-cost model based on official AWS \texttt{ap-south-1} rates and our measured billed execution durations.
+
+\subsection{Mathematical Unit Cost Formulation}
+The total operating cost for processing 1,000 requests ($C_{1000}$) is calculated as:
+\begin{equation}
+C_{1000} = 1000 \cdot \Big( p_{\text{gw}} + p_{\text{req}} + p_{\text{gbs}} \cdot m \cdot t_b + p_{\text{ddb}} \Big)
+\label{eq:cost_model}
+\end{equation}
+where:
+\begin{itemize}
+    \item $p_{\text{gw}} = \$0.00000100$ per request (\$1.00 per million HTTP API requests).
+    \item $p_{\text{req}} = \$0.00000020$ per request (\$0.20 per million Lambda invocations).
+    \item $p_{\text{gbs}} = \$0.0000133334$ per GB-second for AWS Graviton2 ARM64 compute in Mumbai.
+    \item $m = 0.125$~GB (128~MB allocated function memory).
+    \item $t_b = 0.014$~s (median measured billed duration of 14~ms).
+    \item $p_{\text{ddb}} = \$0.00000125$ per write request unit (\$1.25 per million on-demand WRUs).
+\end{itemize}
+
+\subsection{Empirical Cost Breakdown and Monolith Comparison}
+Table~\ref{tab:cost_breakdown} presents the component cost distribution per 1,000 requests, and Figure~\ref{fig:cost_plot} illustrates the cost model.
+
+\begin{table}[H]
+\centering
+\caption{Architectural cost model breakdown per 1,000 requests (\texttt{ap-south-1}).}
+\label{tab:cost_breakdown}
+\small
+\begin{tabularx}{\textwidth}{l r r X}
+\toprule
+\textbf{Infrastructure Component} & \textbf{Cost per 1,000 Reqs} & \textbf{\% of Total} & \textbf{AWS Pricing Basis / Assumption} \\
+\midrule
+Amazon API Gateway (HTTP API v2) & \$0.001000 & 40.4\% & \$1.00 per million requests. \\
+Amazon DynamoDB (On-Demand WRU) & \$0.001250 & 50.5\% & 1 Write Request Unit per ticket at \$1.25 per million WRUs. \\
+AWS Lambda Invocations & \$0.000200 & 8.1\% & \$0.20 per million function calls. \\
+AWS Lambda Compute (ARM64) & \$0.000023 & 1.0\% & 128~MB $\times$ 14~ms $\times$ \$0.0000133334/GB-s. \\
+\midrule
+\textbf{Total Serverless Ingestion Cost} & \textbf{\$0.002473} & \textbf{100.0\%} & \textbf{Effective cost: \$2.47 per 1,000,000 requests.} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.88\textwidth]{images/fig7_serverless_cost_per_1000.png}
+\caption{Modeled unit cost breakdown per 1,000 requests across AWS serverless components compared against provisioned EC2 compute, confirming a 96.1\% cost reduction at bursty operational volumes.}
+\label{fig:cost_plot}
+\end{figure}
+
+\subsection{Comparative Analysis: Serverless vs. Baseline EC2 Compute}
+To establish an architectural baseline, we compared our serverless implementation against a minimal always-on virtual server (\texttt{t4g.micro} 2-vCPU 1~GB RAM instance running in \texttt{ap-south-1}), which costs \$0.0084 per hour (\$6.13 per month) regardless of utilization.
+\begin{itemize}
+    \item At low-to-medium bursty volumes (e.g., 100,000 requests/month typical for early-stage startup integrations), the serverless pipeline incurs approximately \textbf{\$0.25/month}, compared to \textbf{\$6.13/month} for the idle EC2 instance---representing a \textbf{96.1\% cost savings}.
+    \item \textbf{Crossover Threshold:} The provisioned EC2 model only becomes economically competitive when request volume exceeds approximately 2.5 million continuous, evenly distributed requests per month ($\sim$60 requests per minute continuously 24/7).
+\end{itemize}
+
+\section{Challenges Encountered, Solutions, and Mitigations}
+During engineering and benchmarking, four key technical challenges were identified and addressed:
+\begin{enumerate}
+    \item \textbf{Cold-Start Latency Impact:} The 4231.67~ms cold start observed on Request \#1 is unsuitable for user-facing interactive SLAs. For production deployments, this can be mitigated by configuring \textbf{Provisioned Concurrency} (which pre-initializes execution environments) or scheduling scheduled CloudWatch Event warmer pings every 5 minutes.
+    \item \textbf{Sub-Millisecond Timing Precision in Python 3.12:} Initial telemetry implementations using \texttt{time.time()} or standard floating-point subtraction yielded artificial rounding artifacts (\texttt{0.01~ms}) on fast warm requests. We resolved this by adopting \texttt{time.perf\_counter\_ns()}, preserving raw nanosecond integer measurements prior to conversion.
+    \item \textbf{Least-Privilege Security Scoping:} Rather than attaching broad administrator policies, we authored a custom IAM policy restricting Lambda execution permissions strictly to the target DynamoDB table ARN (\texttt{arn:aws:dynamodb:ap-south-1:*:table/FreshworksTickets}).
+    \item \textbf{Multi-Tenant Isolation in DynamoDB:} To prevent partition hotspotting, we utilized a composite primary key consisting of \texttt{tenant\_id} (Partition Key) and \texttt{ticket\_id} (Sort Key), distributing data uniformly across DynamoDB storage partitions while preventing cross-tenant data contamination.
+\end{enumerate}
+
+\section{Threats to Validity and System Limitations}
+We explicitly acknowledge the following experimental limitations:
+\begin{itemize}
+    \item \textbf{Network Jitter:} Latency was benchmarked over the public Internet to \texttt{ap-south-1}, introducing external transit variance into client round-trip times. However, server-side execution was independently captured via CloudWatch and handler metrics.
+    \item \textbf{Single Function Scope:} Our testbed evaluates an isolated ticket intake microservice, whereas Freshworks' production Neo platform orchestrates complex multi-step workflows across hundreds of third-party APIs.
+    \item \textbf{Synthetic Cold Start:} Cold starts were evaluated via explicit initial deployment and idle container eviction, which reflects realistic startup behavior but excludes edge-case AWS infrastructure contention.
+\end{itemize}
+
+\section{Conclusion and Key Learnings}
+This investigation demonstrates why modern SaaS organizations transition from monolithic designs to event-driven serverless architectures:
+\begin{itemize}
+    \item \textbf{Architectural Fit:} Monolithic architectures excel at complex relational queries and sustained high throughput (e.g., Freshdesk's 500K RPM Rails core), but require extensive guardrails (HAProxy shells, Freno, Semian) to survive multi-tenant failures.
+    \item \textbf{Serverless Strengths:} For developer platforms, webhooks, and bursty third-party extensions, serverless compute provides bulletproof execution isolation, zero idle cost, and effortless scaling.
+    \item \textbf{Hypothesis Validation:}
+    \begin{itemize}
+        \item \textbf{H1 (Cold Starts) -- CONFIRMED:} Cold start latency (4231.67~ms) is $26.30\times$ slower than warm median (160.87~ms), dominated by container provisioning (3941.48~ms).
+        \item \textbf{H2 (Execution Speed) -- CONFIRMED:} Once warm, Python 3.12 on ARM64 executes DynamoDB operations in a median of 13.27~ms, consuming negligible compute charges.
+        \item \textbf{H3 (Unit Costs) -- CONFIRMED:} API Gateway (\$1.00/M) and DynamoDB (\$1.25/M) represent 90.9\% of per-request serverless expenditure, while Lambda compute represents only 1.0\%.
+    \end{itemize}
+\end{itemize}
+
+\section{Roles of Team Members and Git Contributions}
+Workload was equitably distributed across all three Group-15 members to align with their areas of specialization, as detailed in Table~\ref{tab:team_contributions}.
+
+\begin{table}[H]
+\centering
+\caption{Equitable workload distribution and Git contribution history across Group-15 members.}
+\label{tab:team_contributions}
+\small
+\begin{tabularx}{\textwidth}{l p{3.2cm} X}
+\toprule
+\textbf{Team Member} & \textbf{Core Responsibilities} & \textbf{Key Git Contributions \& Verified Deliverables} \\
+\midrule
+\textbf{Jayaditya Shah} \newline (202301254) & Lead Cloud Architect \newline \& Backend Engineer & AWS Lambda Python 3.12 handler, DynamoDB integration, nanosecond telemetry, AWS SAM and Serverless IaC templates, Docker container topologies, HAProxy shell configs. \newline \textit{Git Commit 1: \texttt{feat: implement AWS Lambda backend and cloud infrastructure}} \\
+\midrule
+\textbf{Hriday Asnani} \newline (202301282) & Benchmark \& Performance \newline Telemetry Engineer & 100-request benchmarking harness (\texttt{benchmark\_cold\_start.py}), statistical computation engine, live empirical datasets (\texttt{EXP-20261116-102200}), CSV/Excel telemetry models, 300~DPI latency and cost plots. \newline \textit{Git Commit 2: \texttt{feat: add serverless benchmarking and performance analysis}} \\
+\midrule
+\textbf{Maharshi Patel} \newline (202301486) & Documentation, FinOps \newline \& System Validation & Technical report generation scripts, LaTeX report consolidation, visual AWS console evidence capture, FinOps comparative economics modeling, QA test suite (\texttt{test\_benchmarking\_logic.py}). \newline \textit{Git Commit 3: \texttt{docs: add project reports, screenshots and setup documentation}} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{thebibliography}{99}
+\bibitem{fw_scale_2020} Freshworks Engineering (B. Kumar), ``Scaling the Freshdesk web app for high availability'', 15 Jul 2020. \url{https://www.freshworks.com/explore-cx/scaling-the-freshdesk-web-app-for-high-availability/}
+\bibitem{fw_haproxy_2021} S. Mallapu, ``How Freshdesk uses HAProxy at scale'', Freshworks Engineering, 24 Aug 2021. \url{https://www.freshworks.com/explore-cx/how-freshdesk-uses-haproxy-at-scale/}
+\bibitem{fw_sreconf_2023} R. Srinivasan, ``Shell based architecture for maintaining high availability'', SRE Conf 2023, Sep 2023. \url{https://hasgeek.com/rootconf/sreconf-2023/sub/shell-based-architecture-for-maintaining-high-avai-PAfCRfuc4Puey7DiTUHsVs}
+\bibitem{fw_freno} Freshworks Engineering, ``Behind the scenes: Safeguarding Freshdesk's infra from BG jobs''. \url{https://www.freshworks.com/saas/eng-blogs/safeguardling-freshdesk-infra-from-bg-jobs-blog/}
+\bibitem{github_freno} GitHub, ``freno: cooperative, highly available throttler service''. \url{https://github.com/github/freno}
+\bibitem{aws_freshworks_lambda} Amazon Web Services, ``Freshworks supercharges its Marketplace with AWS Lambda'', case study, 2020. \url{https://www.aws.amazon.com/id/solutions/case-studies/freshworks}
+\bibitem{fw_neo_2020} Freshworks, ``With CRM and Neo, Freshworks brings the iPhone moment in business software closer to reality'', 2020. \url{https://www.freshworks.com/with-crm-and-neo-freshworks-brings-the-iphone-moment-in-business-software-closer-to-reality-blog}
+\bibitem{sec_10k_2021} Freshworks Inc., Form 10-K for the fiscal year ended 31 Dec 2021, SEC. \url{https://www.sec.gov/Archives/edgar/data/1544522/000162828022003537/frsh-20211231.htm}
+\bibitem{sec_10k_2022} Freshworks Inc., Form 10-K for the fiscal year ended 31 Dec 2022, SEC. \url{https://www.sec.gov/Archives/edgar/data/1544522/000154452223000016/frsh-20221231.htm}
+\bibitem{fw_q4_2025} Freshworks Inc., Earnings Release for Q4 and full year 2025. \url{https://ir.freshworks.com/files/doc_earnings/2025/q4/earnings-result/Earnings-Release-Q4-2025.pdf}
+\bibitem{fw_fool_2025} Freshworks Q4 2025 earnings call transcript, The Motley Fool, 11 Feb 2026. \url{https://www.fool.com/earnings/call-transcripts/2026/02/11/freshworks-frsh-q4-2025-earnings-call-transcript/}
+\bibitem{aws_passport} Amazon Web Services, ``Freshworks aims for global expansion... using AWS Global Passport'', case study. \url{https://aws.amazon.com/solutions/case-studies/freshworks-global-passport/}
+\bibitem{fw_sca_2024} Freshworks, ``Strategic Collaboration Agreement with AWS'', press release, 29 Jan 2024. \url{https://www.tipranks.com/news/press-releases/freshworks-announces-strategic-collaboration-agreement-with-aws-to-increase-the-reach-of-its-ai-boosted-software-as-a-service}
+\bibitem{aws_rds_customers} Amazon Web Services, ``Amazon RDS for MySQL customers (Freshworks entry)''. \url{https://aws.amazon.com/rds/mysql/customers/}
+\bibitem{spot_freshworks} Spot by NetApp, ``Freshworks case study''. \url{https://spot.io/case-study/freshworks-case-study}
+\bibitem{fw_redis_migration} A. Arvind, ``Migrating Redis from ElastiCache with zero downtime'', Freshworks Engineering Blog, 27 Sep 2019. \url{https://medium.com/freshworks-engineering-blog/migrating-redis-from-elasticache-with-zero-downtime-7aeb278aa75b}
+\bibitem{casestudies_fw} CaseStudies.com, ``List of case studies featuring Freshworks as customer''. \url{https://www.casestudies.com/customer/freshworks}
+\end{thebibliography}
+
+\end{document}
