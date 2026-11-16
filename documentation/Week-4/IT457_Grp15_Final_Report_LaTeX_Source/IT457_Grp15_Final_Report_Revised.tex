@@ -130,8 +130,8 @@ The architectural foundation of Freshdesk is illustrated in Figure~\ref{fig:mono
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.85\textwidth]{images/fig1_serverless_architecture.png}
-\caption{Architectural overview of our deployed AWS Serverless Ticket Processing Microservice in \texttt{ap-south-1}, modeling the Freshworks Neo developer platform event pipeline.}
+\includegraphics[width=0.98\textwidth]{images/week2_freshdesk_request_path.pdf}
+\caption{Freshdesk web request path and background processing as described in the engineering posts. The dashed blue region is what we understand as one ``shell''. Reproduced from our Week-2 report.}
 \label{fig:monolith_arch}
 \end{figure}
 
@@ -184,6 +184,14 @@ Freshworks resolved the challenge of untrusted third-party code by adopting a co
 
 When business events occur in Freshdesk (e.g., \texttt{ticket.created}, \texttt{ticket.status\_updated}), the platform's event router identifies all applications subscribed to that event and dispatches an asynchronous invocation to the corresponding Lambda function. This design guarantees complete memory, runtime, and security isolation between external developers. Furthermore, because billing is tied strictly to execution duration, Freshworks incurs zero idle cost for applications that receive infrequent traffic. The company scaled this platform from an initial limit of 1,000 concurrent executions in 2017 to handling hundreds of millions of events monthly \cite{aws_freshworks_lambda}.
 
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.96\textwidth]{images/week2_neo_event_flow.pdf}
+\caption{Event flow of the Freshworks developer platform, based on the AWS Lambda case study~\cite{aws_freshworks_lambda}. Reproduced from our Week-2 report.}
+\label{fig:neo_event_flow}
+\end{figure}
+
 \section{Cloud Economics and Public Financial Analysis}
 To understand the financial implications of Freshworks' cloud scaling, we aggregated public financial data from SEC Form 10-K filings and investor earnings disclosures, as presented in Table~\ref{tab:financials}.
 
@@ -211,6 +219,14 @@ The empirical financial record demonstrates that while hosting expenditures grew
 
 \section{Our Serverless Implementation on AWS}
 To experimentally investigate the performance and economic realities of the serverless model examined in the Neo platform, we engineered and deployed an end-to-end serverless ticket processing system in the AWS Asia Pacific (Mumbai, \texttt{ap-south-1}) region.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.88\textwidth]{images/fig1_serverless_architecture.png}
+\caption{Architectural overview of our deployed AWS serverless ticket processing microservice in \texttt{ap-south-1}, modeling the Freshworks Neo developer platform event pipeline.}
+\label{fig:deployed_serverless_arch}
+\end{figure}
+
 
 \begin{figure}[H]
 \centering
@@ -463,25 +479,32 @@ This investigation demonstrates why modern SaaS organizations transition from mo
 \end{itemize}
 
 \section{Roles of Team Members and Git Contributions}
-Workload was equitably distributed across all three Group-15 members to align with their areas of specialization, as detailed in Table~\ref{tab:team_contributions}.
+We retained the work allocation established in our Week-2 report (Table~6): Hriday Asnani and Maharshi Patel jointly owned the Freshworks case study, documentation, and measurement analysis, while Jayaditya Shah owned the AWS implementation. Each member also reviewed another component and contributed to the shared repository. Table~\ref{tab:team_contributions} records this division of responsibilities.
 
 \begin{table}[H]
 \centering
-\caption{Equitable workload distribution and Git contribution history across Group-15 members.}
+\caption{Division of responsibilities, aligned with Table 6 of the Week-2 report.}
 \label{tab:team_contributions}
 \small
-\begin{tabularx}{\textwidth}{l p{3.2cm} X}
+\renewcommand{\arraystretch}{1.18}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{3.3cm} >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}p{3.25cm}}
 \toprule
-\textbf{Team Member} & \textbf{Core Responsibilities} & \textbf{Key Git Contributions \& Verified Deliverables} \\
+\textbf{Member / Focus} & \textbf{Primary responsibilities (owns)} & \textbf{Additional contributions / review} \\
 \midrule
-\textbf{Jayaditya Shah} \newline (202301254) & Lead Cloud Architect \newline \& Backend Engineer & AWS Lambda Python 3.12 handler, DynamoDB integration, nanosecond telemetry, AWS SAM and Serverless IaC templates, Docker container topologies, HAProxy shell configs. \newline \textit{Git Commit 1: \texttt{feat: implement AWS Lambda backend and cloud infrastructure}} \\
+\textbf{Hriday Asnani (202301282) and Maharshi Patel (202301486)}\\
+Case study, documentation, and measurement analysis
+& Freshworks research and architecture diagrams; reports and references; weekly progress records and final report assembly. Measurement scripts, AWS CLI cold-start automation, CloudWatch Logs Insights queries, pandas-based analysis and plots, statistical summaries, and cost spreadsheets.
+& Joint cost-model discussion; review of AWS setup notes; review of the results section; additional experiments E3 and E4 if feasible. \\
 \midrule
-\textbf{Hriday Asnani} \newline (202301282) & Benchmark \& Performance \newline Telemetry Engineer & 100-request benchmarking harness (\texttt{benchmark\_cold\_start.py}), statistical computation engine, live empirical datasets (\texttt{EXP-20261116-102200}), CSV/Excel telemetry models, 300~DPI latency and cost plots. \newline \textit{Git Commit 2: \texttt{feat: add serverless benchmarking and performance analysis}} \\
-\midrule
-\textbf{Maharshi Patel} \newline (202301486) & Documentation, FinOps \newline \& System Validation & Technical report generation scripts, LaTeX report consolidation, visual AWS console evidence capture, FinOps comparative economics modeling, QA test suite (\texttt{test\_benchmarking\_logic.py}). \newline \textit{Git Commit 3: \texttt{docs: add project reports, screenshots and setup documentation}} \\
+\textbf{Jayaditya Shah (202301254)}\\
+AWS build
+& DynamoDB table; IAM execution role; Lambda function and Python handler; API Gateway routing and throttling; CloudWatch access; budget alert; AWS architecture screenshots.
+& Optional infrastructure-as-code template; review of the measurement script. \\
 \bottomrule
 \end{tabularx}
 \end{table}
+
+\noindent\textbf{Git contribution history.} All three members contributed through the shared repository. Recorded milestones include \texttt{feat: implement AWS Lambda backend and cloud infrastructure} (Jayaditya), \texttt{feat: add serverless benchmarking and performance analysis} (Hriday), and \texttt{docs: add project reports, screenshots and setup documentation} (Maharshi). The jointly assigned research, documentation, and measurement responsibilities remained shared, as specified in Week 2.
 
 \begin{thebibliography}{99}
 \bibitem{fw_scale_2020} Freshworks Engineering (B. Kumar), ``Scaling the Freshdesk web app for high availability'', 15 Jul 2020. \url{https://www.freshworks.com/explore-cx/scaling-the-freshdesk-web-app-for-high-availability/}
