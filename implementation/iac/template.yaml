@@ -1,0 +1,91 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  IT457 Cloud Computing - Theme 4: Serverless and Startups (Freshworks)
+  Architecture: Amazon API Gateway -> AWS Lambda -> Amazon DynamoDB
+
+Globals:
+  Function:
+    Timeout: 10
+    MemorySize: 128
+    Runtime: python3.12
+    Tracing: Active
+    Environment:
+      Variables:
+        DYNAMODB_TABLE: !Ref FreshworksTicketsTable
+
+Resources:
+  # 1. API Gateway HTTP API
+  FreshworksHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: prod
+      CorsConfiguration:
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - X-Tenant-ID
+          - Authorization
+        AllowOrigins:
+          - '*'
+
+  # 2. AWS Lambda Function
+  FreshworksTicketProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../lambda/
+      Handler: lambda_function.lambda_handler
+      Architectures:
+        - arm64
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FreshworksTicketsTable
+      Events:
+        CreateTicket:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FreshworksHttpApi
+            Path: /tickets
+            Method: post
+        GetTicketStatus:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FreshworksHttpApi
+            Path: /tickets
+            Method: get
+
+  # 3. Amazon DynamoDB Serverless Table (Pay-Per-Request On-Demand)
+  FreshworksTicketsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: FreshworksTickets
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: tenant_id
+          AttributeType: S
+        - AttributeName: ticket_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: tenant_id
+          KeyType: HASH
+        - AttributeName: ticket_id
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+Outputs:
+  FreshworksApiEndpoint:
+    Description: "Live Invoke URL for Freshworks Serverless Ticket Processor"
+    Value: !Sub "https://${FreshworksHttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod/tickets"
+  FunctionArn:
+    Description: "Freshworks Lambda Function ARN"
+    Value: !GetAtt FreshworksTicketProcessorFunction.Arn
+  DynamoDBTableArn:
+    Description: "Freshworks DynamoDB Table ARN"
+    Value: !GetAtt FreshworksTicketsTable.Arn
+
