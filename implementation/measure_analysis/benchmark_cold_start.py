@@ -9,11 +9,11 @@ and cold-start versus warm execution across 100 consecutive requests.
 Calculates the AWS architectural cost model per 1,000 requests.
 
 Generates:
-1. data/cold_start_warm_benchmark.json
-2. data/freshworks_serverless_latency_and_cost.csv
-3. data/freshworks_serverless_latency_and_cost.xlsx (Native Excel workbook)
-4. plots/cold_start_vs_warm_latency.png (300 DPI)
-5. plots/serverless_cost_per_1000.png (300 DPI)
+1. results/data/cold_start_warm_benchmark.json
+2. results/data/freshworks_serverless_latency_and_cost.csv
+3. results/data/freshworks_serverless_latency_and_cost.xlsx (Native Excel workbook)
+4. results/plots/cold_start_vs_warm_latency.png (300 DPI)
+5. results/plots/serverless_cost_per_1000.png (300 DPI)
 """
 
 import os
@@ -451,3 +451,368 @@ def compute_aws_cost_model(stats, results=None):
         "modeled_savings_vs_monolith_pct": savings_pct,
         "notes": "Calculated using official AWS ap-south-1 pricing rates. Compares bursty on-demand serverless against always-on provisioned EC2 compute."
     }
+
+def generate_csv_and_xlsx(results, stats, cost_model, output_dir=DATA_DIR):
+    """
+    Exports clean, validated experimental data into CSV and native multi-tab XLSX files.
+    """
+    # 1. Write CSV
+    csv_path = output_dir / "freshworks_serverless_latency_and_cost.csv"
+    with open(csv_path, "w", encoding="utf-8") as f:
+        f.write("Request_Number,Ticket_ID,State,Is_Cold_Start,Roundtrip_Latency_ms,Server_Exec_ms,Billed_Duration_ms,Memory_MB,HTTP_Status,Success,Error\n")
+        for r in results:
+            exec_val = r.get('server_execution_time_ms', '') if r.get('server_execution_time_ms') is not None else ''
+            billed_val = r.get('billed_duration_ms', '') if r.get('billed_duration_ms') is not None else ''
+            err_val = f'"{r.get("error")}"' if r.get("error") else ""
+            lat_val = r.get('roundtrip_latency_ms', '') if r.get('roundtrip_latency_ms') is not None else ''
+            f.write(f"{r.get('request_number', '')},{r.get('ticket_id', '')},{r.get('state', '')},{r.get('is_cold_start', '')},{lat_val},{exec_val},{billed_val},{r.get('memory_allocated_mb', 128)},{r.get('http_status', '')},{r.get('success', True)},{err_val}\n")
+    print(f"✓ CSV generated: {csv_path}")
+
+    # 2. Write Multi-Tab Native XLSX via zipfile
+    xlsx_path = output_dir / "freshworks_serverless_latency_and_cost.xlsx"
+
+    content_types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"""
+
+    rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"""
+
+    workbook = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Latency Log (100 Requests)" sheetId="1" r:id="rId1"/>
+    <sheet name="Cost Model &amp; Summary" sheetId="2" r:id="rId2"/>
+  </sheets>
+</workbook>"""
+
+    workbook_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+</Relationships>"""
+
+    # Sheet 1: Raw Latency Data
+    sheet1_rows = []
+    sheet1_rows.append('<row r="1">'
+                       '<c r="A1" t="inlineStr"><is><t>Request Number</t></is></c>'
+                       '<c r="B1" t="inlineStr"><is><t>Ticket ID</t></is></c>'
+                       '<c r="C1" t="inlineStr"><is><t>State</t></is></c>'
+                       '<c r="D1" t="inlineStr"><is><t>Roundtrip Latency (ms)</t></is></c>'
+                       '<c r="E1" t="inlineStr"><is><t>Server Execution (ms)</t></is></c>'
+                       '<c r="F1" t="inlineStr"><is><t>Billed Duration (ms)</t></is></c>'
+                       '<c r="G1" t="inlineStr"><is><t>Memory (MB)</t></is></c>'
+                       '<c r="H1" t="inlineStr"><is><t>HTTP Status</t></is></c>'
+                       '</row>')
+
+    for idx, r in enumerate(results, start=2):
+        exec_str = f'<c r="E{idx}"><v>{r.get("server_execution_time_ms")}</v></c>' if r.get("server_execution_time_ms") is not None else f'<c r="E{idx}" t="inlineStr"><is><t>N/A</t></is></c>'
+        billed_str = f'<c r="F{idx}"><v>{r.get("billed_duration_ms")}</v></c>' if r.get("billed_duration_ms") is not None else f'<c r="F{idx}" t="inlineStr"><is><t>N/A</t></is></c>'
+        lat_str = f'<c r="D{idx}"><v>{r.get("roundtrip_latency_ms")}</v></c>' if r.get("roundtrip_latency_ms") is not None else f'<c r="D{idx}" t="inlineStr"><is><t>N/A</t></is></c>'
+        row_str = (f'<row r="{idx}">'
+                   f'<c r="A{idx}"><v>{r.get("request_number", idx-1)}</v></c>'
+                   f'<c r="B{idx}" t="inlineStr"><is><t>{r.get("ticket_id", "")}</t></is></c>'
+                   f'<c r="C{idx}" t="inlineStr"><is><t>{r.get("state", "UNKNOWN")}</t></is></c>'
+                   f'{lat_str}'
+                   f'{exec_str}'
+                   f'{billed_str}'
+                   f'<c r="G{idx}"><v>{r.get("memory_allocated_mb", 128)}</v></c>'
+                   f'<c r="H{idx}"><v>{r.get("http_status", 200)}</v></c>'
+                   f'</row>')
+        sheet1_rows.append(row_str)
+
+    sheet1 = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    {''.join(sheet1_rows)}
+  </sheetData>
+</worksheet>"""
+
+    # Sheet 2: Cost Model & Summary
+    cold_display = stats['cold_start']['display_latency']
+    warm_p50_display = f"{stats['warm']['p50_ms']} ms" if stats['warm']['p50_ms'] is not None else "N/A"
+    warm_p95_display = f"{stats['warm']['p95_ms']} ms" if stats['warm']['p95_ms'] is not None else "N/A"
+
+    sheet2_content = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="inlineStr"><is><t>IT457 Theme 4: Serverless Freshworks Cloud Economics &amp; Benchmark Summary</t></is></c></row>
+    <row r="2"><c r="A2" t="inlineStr"><is><t>Summary Metric</t></is></c><c r="B2" t="inlineStr"><is><t>Value</t></is></c><c r="C2" t="inlineStr"><is><t>Notes</t></is></c></row>
+    <row r="3"><c r="A3" t="inlineStr"><is><t>Total Requests Tested</t></is></c><c r="B3"><v>{stats['total_requests']}</v></c><c r="C3" t="inlineStr"><is><t>Sequential Benchmark</t></is></c></row>
+    <row r="4"><c r="A4" t="inlineStr"><is><t>Successful Requests</t></is></c><c r="B4"><v>{stats['successful_requests']}</v></c><c r="C4" t="inlineStr"><is><t>HTTP 200/201 responses</t></is></c></row>
+    <row r="5"><c r="A5" t="inlineStr"><is><t>Cold Starts Observed</t></is></c><c r="B5"><v>{stats['cold_start_count']}</v></c><c r="C5" t="inlineStr"><is><t>Verified via Lambda Telemetry</t></is></c></row>
+    <row r="6"><c r="A6" t="inlineStr"><is><t>Cold Start Latency</t></is></c><c r="B6" t="inlineStr"><is><t>{cold_display}</t></is></c><c r="C6" t="inlineStr"><is><t>Container provisioning overhead</t></is></c></row>
+    <row r="7"><c r="A7" t="inlineStr"><is><t>Warm Median Latency (p50)</t></is></c><c r="B7" t="inlineStr"><is><t>{warm_p50_display}</t></is></c><c r="C7" t="inlineStr"><is><t>Pre-warmed execution baseline</t></is></c></row>
+    <row r="8"><c r="A8" t="inlineStr"><is><t>Warm 95th Percentile (p95)</t></is></c><c r="B8" t="inlineStr"><is><t>{warm_p95_display}</t></is></c><c r="C8" t="inlineStr"><is><t>Tail latency</t></is></c></row>
+    <row r="9"><c r="A9" t="inlineStr"><is><t>Cold-to-Warm Ratio</t></is></c><c r="B9" t="inlineStr"><is><t>{stats['speedup_display']}</t></is></c><c r="C9" t="inlineStr"><is><t>Execution speedup factor</t></is></c></row>
+
+    <row r="11"><c r="A11" t="inlineStr"><is><t>Service Component</t></is></c><c r="B11" t="inlineStr"><is><t>Cost per 1,000 Requests (USD)</t></is></c><c r="C11" t="inlineStr"><is><t>AWS ap-south-1 Pricing Model Reference</t></is></c></row>
+    <row r="12"><c r="A12" t="inlineStr"><is><t>AWS Lambda Invocations</t></is></c><c r="B12"><v>{cost_model['lambda_invocation_per_1k_usd']}</v></c><c r="C12" t="inlineStr"><is><t>$0.20 per 1M requests</t></is></c></row>
+    <row r="13"><c r="A13" t="inlineStr"><is><t>AWS Lambda Compute (128MB ARM64)</t></is></c><c r="B13"><v>{cost_model['lambda_compute_per_1k_usd']}</v></c><c r="C13" t="inlineStr"><is><t>$0.0000133334/GB-s (Graviton2)</t></is></c></row>
+    <row r="14"><c r="A14" t="inlineStr"><is><t>Amazon API Gateway (HTTP API v2)</t></is></c><c r="B14"><v>{cost_model['api_gateway_per_1k_usd']}</v></c><c r="C14" t="inlineStr"><is><t>$1.00 per 1M requests</t></is></c></row>
+    <row r="15"><c r="A15" t="inlineStr"><is><t>Amazon DynamoDB (On-Demand WRU)</t></is></c><c r="B15"><v>{cost_model['dynamodb_per_1k_usd']}</v></c><c r="C15" t="inlineStr"><is><t>$1.25 per 1M Write Request Units</t></is></c></row>
+    <row r="16"><c r="A16" t="inlineStr"><is><t>Total Serverless Cost per 1,000 Requests</t></is></c><c r="B16"><v>{cost_model['total_serverless_cost_per_1k_usd']}</v></c><c r="C16" t="inlineStr"><is><t>Subtotal model estimate</t></is></c></row>
+    <row r="18"><c r="A18" t="inlineStr"><is><t>Comparison: Dedicated EC2 Monolith Fleet</t></is></c><c r="B18"><v>{cost_model['ec2_monolith_cost_per_1k_usd']}</v></c><c r="C18" t="inlineStr"><is><t>$0.063472 per 1,000 requests (amortized)</t></is></c></row>
+    <row r="19"><c r="A19" t="inlineStr"><is><t>Modeled Cost Savings vs Monolith</t></is></c><c r="B19" t="inlineStr"><is><t>{cost_model['modeled_savings_vs_monolith_pct']}%</t></is></c><c r="C19" t="inlineStr"><is><t>Theoretical on-demand efficiency</t></is></c></row>
+  </sheetData>
+</worksheet>"""
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr('[Content_Types].xml', content_types)
+        z.writestr('_rels/.rels', rels)
+        z.writestr('xl/workbook.xml', workbook)
+        z.writestr('xl/_rels/workbook.xml.rels', workbook_rels)
+        z.writestr('xl/worksheets/sheet1.xml', sheet1)
+        z.writestr('xl/worksheets/sheet2.xml', sheet2_content)
+
+    with open(xlsx_path, "wb") as f:
+        f.write(buf.getvalue())
+    print(f"✓ Excel Workbook (.xlsx) generated: {xlsx_path}")
+
+def plot_visualizations(results, stats, cost_model, output_dir=PLOTS_DIR):
+    """
+    Renders publication-grade 300 DPI plots.
+    Correctly handles zero, one, or multiple observed cold starts without plotting 0 ms bars.
+    """
+    requests = [r["request_number"] for r in results]
+    latencies = [r["roundtrip_latency_ms"] for r in results if r.get("roundtrip_latency_ms") is not None]
+
+    cold_requests = [r for r in results if r.get("is_cold_start") is True and r.get("roundtrip_latency_ms") is not None]
+    warm_requests = [r for r in results if r.get("is_cold_start") is False and r.get("roundtrip_latency_ms") is not None]
+    unknown_requests = [r for r in results if r.get("is_cold_start") is None and r.get("roundtrip_latency_ms") is not None]
+
+    # --- Plot 1: Cold Start vs Warm Latency Telemetry (300 DPI) ---
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6), gridspec_kw={'width_ratios': [2.2, 1]}, dpi=300)
+
+    # Subplot A: Request Sequence
+    # Plot client round-trip line
+    ax1.plot(requests, [r["roundtrip_latency_ms"] for r in results], color="#94a3b8", linewidth=1.0, linestyle="-", alpha=0.5, zorder=1)
+
+    # Warm points
+    if warm_requests:
+        w_x = [r["request_number"] for r in warm_requests]
+        w_y = [r["roundtrip_latency_ms"] for r in warm_requests]
+        ax1.scatter(w_x, w_y, color="#2563eb", s=25, label=f"Warm Requests (n={len(warm_requests)})", alpha=0.85, zorder=3)
+
+    # Unknown points (if any)
+    if unknown_requests:
+        u_x = [r["request_number"] for r in unknown_requests]
+        u_y = [r["roundtrip_latency_ms"] for r in unknown_requests]
+        ax1.scatter(u_x, u_y, color="#9333ea", marker="^", s=30, label=f"Unknown State (n={len(unknown_requests)})", alpha=0.8, zorder=3)
+
+    # Cold points (if any)
+    if cold_requests:
+        c_x = [r["request_number"] for r in cold_requests]
+        c_y = [r["roundtrip_latency_ms"] for r in cold_requests]
+        ax1.scatter(c_x, c_y, color="#dc2626", marker="D", s=60, label=f"Verified Cold Start (n={len(cold_requests)})", zorder=4)
+        for cx, cy in zip(c_x, c_y):
+            ax1.annotate(
+                f"Cold Start (Req #{cx}):\n{cy:.1f} ms",
+                xy=(cx, cy),
+                xytext=(cx + 5, cy * 0.85 if cy > 100 else cy + 20),
+                arrowprops=dict(facecolor="#dc2626", shrink=0.08, width=1.5, headwidth=6),
+                fontsize=9.5,
+                fontweight="bold",
+                color="#dc2626",
+                bbox=dict(boxstyle="round,pad=0.4", facecolor="#fee2e2", edgecolor="#dc2626", alpha=0.95),
+                zorder=5
+            )
+    else:
+        # Zero cold starts observed: place clear annotation instead of drawing fake cold start
+        ax1.text(
+            0.5, 0.88,
+            "Cold Start: Not observed in this run\n(All 100 requests served by pre-warmed AWS Lambda container)",
+            transform=ax1.transAxes,
+            ha="center", va="center",
+            fontsize=10,
+            fontweight="bold",
+            color="#92400e",
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="#fef3c7", edgecolor="#f59e0b", alpha=0.95)
+        )
+
+    # Server execution time (when reported)
+    valid_server_data = [(r["request_number"], r["server_execution_time_ms"]) for r in results if r.get("server_execution_time_ms") is not None]
+    if valid_server_data:
+        sx, sy = zip(*valid_server_data)
+        ax1.plot(sx, sy, color="#059669", linewidth=1.2, linestyle="--", label="Lambda Server Execution Time", alpha=0.85, zorder=2)
+
+    # Reference line for Warm Median
+    warm_p50 = stats["warm"]["p50_ms"]
+    if warm_p50 is not None:
+        ax1.axhline(warm_p50, color="#64748b", linestyle=":", linewidth=1.5, label=f"Warm Median (p50): {warm_p50:.1f} ms")
+
+    # Reference line for Warm p95
+    warm_p95 = stats["warm"]["p95_ms"]
+    if warm_p95 is not None and warm_p95 != warm_p50:
+        ax1.axhline(warm_p95, color="#f59e0b", linestyle="--", linewidth=1.0, alpha=0.7, label=f"Warm p95: {warm_p95:.1f} ms")
+
+    ax1.set_title("AWS Lambda Execution Latency: 100 Consecutive Requests", fontsize=12, fontweight="bold", pad=12)
+    ax1.set_xlabel("Consecutive Request Number", fontsize=10, fontweight="bold")
+    ax1.set_ylabel("Latency (Milliseconds)", fontsize=10, fontweight="bold")
+    ax1.set_xlim(-2, 105)
+    max_lat = max(latencies) if latencies else 100
+    ax1.set_ylim(0, max_lat * 1.18)
+    ax1.grid(True, linestyle="--", alpha=0.5)
+    ax1.legend(loc="upper right", fontsize=8.5)
+
+    # Subplot B: Boxplot Distribution Comparison
+    if cold_requests and warm_requests:
+        box_data = [[r["roundtrip_latency_ms"] for r in warm_requests], [r["roundtrip_latency_ms"] for r in cold_requests]]
+        bp = ax2.boxplot(box_data, patch_artist=True, tick_labels=[f"Warm State\n(n={len(warm_requests)})", f"Cold Start\n(n={len(cold_requests)})"], widths=0.5)
+        bp['boxes'][0].set(facecolor="#93c5fd", edgecolor="#1d4ed8")
+        bp['boxes'][1].set(facecolor="#fca5a5", edgecolor="#b91c1c")
+        bp['medians'][0].set(color="#1e3a8a", linewidth=2)
+        bp['medians'][1].set(color="#7f1d1d", linewidth=2)
+    elif warm_requests:
+        # Zero cold starts: boxplot only of warm state
+        box_data = [[r["roundtrip_latency_ms"] for r in warm_requests]]
+        bp = ax2.boxplot(box_data, patch_artist=True, tick_labels=[f"Warm Requests\n(n={len(warm_requests)})"], widths=0.4)
+        bp['boxes'][0].set(facecolor="#93c5fd", edgecolor="#1d4ed8")
+        bp['medians'][0].set(color="#1e3a8a", linewidth=2)
+        ax2.text(
+            0.5, 0.70,
+            "Cold Start:\nNot Observed\nin this run",
+            transform=ax2.transAxes,
+            ha="center", va="center",
+            fontsize=9.5,
+            fontweight="bold",
+            color="#92400e",
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="#fef3c7", edgecolor="#f59e0b", alpha=0.9)
+        )
+    else:
+        ax2.text(0.5, 0.5, "Insufficient Data", transform=ax2.transAxes, ha="center")
+
+    ax2.set_title("Latency Distribution", fontsize=12, fontweight="bold", pad=12)
+    ax2.set_ylabel("Latency (Milliseconds)", fontsize=10, fontweight="bold")
+    ax2.grid(True, linestyle="--", alpha=0.5)
+
+    plt.tight_layout()
+    plot1_path = output_dir / "cold_start_vs_warm_latency.png"
+    plt.savefig(plot1_path, dpi=300)
+    plt.close()
+    print(f"✓ Plot 1 generated: {plot1_path}")
+
+    # --- Plot 2: Cost per 1,000 Requests Comparison (300 DPI) ---
+    fig, (ax_cost1, ax_cost2) = plt.subplots(1, 2, figsize=(14, 6), gridspec_kw={'width_ratios': [1.2, 1.4]}, dpi=300)
+
+    # Subplot A: Serverless vs EC2 Monolith
+    categories = ["EC2 VM Monolith\n(Provisioned Fleet Model)", "Serverless Architecture\n(API Gateway+Lambda+DDB)"]
+    costs = [cost_model["ec2_monolith_cost_per_1k_usd"], cost_model["total_serverless_cost_per_1k_usd"]]
+    colors = ["#f87171", "#4ade80"]
+
+    bars = ax_cost1.bar(categories, costs, color=colors, edgecolor="#1e293b", linewidth=1.2, width=0.55)
+    ax_cost1.set_title("Modeled Hosting Cost per 1,000 Requests", fontsize=12, fontweight="bold", pad=12)
+    ax_cost1.set_ylabel("Estimated Cost in USD ($)", fontsize=10, fontweight="bold")
+    ax_cost1.grid(True, linestyle="--", alpha=0.4, axis="y")
+
+    for bar in bars:
+        h = bar.get_height()
+        ax_cost1.text(bar.get_x() + bar.get_width() / 2.0, h + 0.0015, f"${h:.5f}", ha="center", va="bottom", fontsize=10, fontweight="bold")
+
+    ax_cost1.text(
+        0.5, 0.035,
+        f"{cost_model['modeled_savings_vs_monolith_pct']}% Modeled Cost Savings\n(AWS ap-south-1 Pricing Model)",
+        transform=ax_cost1.transData,
+        fontsize=9.5, fontweight="bold", color="#15803d",
+        bbox=dict(boxstyle="round,pad=0.5", facecolor="#dcfce7", edgecolor="#16a34a")
+    )
+
+    # Subplot B: Serverless Component Breakdown
+    components = ["API Gateway\nHTTP API v2", "DynamoDB\nOn-Demand WRU", "Lambda\nCompute & Invocations"]
+    comp_costs = [
+        cost_model["api_gateway_per_1k_usd"],
+        cost_model["dynamodb_per_1k_usd"],
+        cost_model["lambda_total_per_1k_usd"]
+    ]
+    comp_colors = ["#38bdf8", "#fbbf24", "#a855f7"]
+
+    bars2 = ax_cost2.bar(components, comp_costs, color=comp_colors, edgecolor="#1e293b", linewidth=1.2, width=0.55)
+    ax_cost2.set_title("Serverless Cost Breakdown per 1,000 Requests", fontsize=12, fontweight="bold", pad=12)
+    ax_cost2.set_ylabel("Component Cost in USD ($)", fontsize=10, fontweight="bold")
+    ax_cost2.grid(True, linestyle="--", alpha=0.4, axis="y")
+
+    for bar in bars2:
+        h = bar.get_height()
+        ax_cost2.text(bar.get_x() + bar.get_width() / 2.0, h + 0.00004, f"${h:.6f}", ha="center", va="bottom", fontsize=9.5, fontweight="bold")
+
+    fig.text(0.5, 0.02, "Note: Architectural cost model estimates derived from published AWS ap-south-1 rates (not verified billing invoices).",
+             ha="center", fontsize=8.5, color="#64748b", fontstyle="italic")
+
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
+    plot2_path = output_dir / "serverless_cost_per_1000.png"
+    plt.savefig(plot2_path, dpi=300)
+    plt.close()
+    print(f"✓ Plot 2 generated: {plot2_path}")
+
+def main():
+    target_url = os.environ.get("TARGET_API_URL", DEFAULT_TARGET_URL)
+    simulate_flag = os.environ.get("SIMULATE_LOCAL", "false").lower() == "true"
+
+    # 1. Safely archive previous experimental run before writing new data
+    archive_previous_results()
+
+    # 2. Execute Benchmark
+    results, experiment_id = run_benchmark(target_url=target_url, total_requests=100, simulate_local=simulate_flag)
+
+    # 3. Compute Rigorous Statistics
+    stats = compute_statistics(results)
+
+    # 4. Compute Architectural Cost Model
+    cost_model = compute_aws_cost_model(stats, results)
+
+    # 5. Save Comprehensive JSON Summary
+    summary_data = {
+        "theme": "Theme 4: Serverless and Startups (Freshworks)",
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "experiment_id": experiment_id,
+        "environment": "LOCAL_SIMULATION" if simulate_flag else "AWS_LIVE",
+        "live_api_url": target_url,
+        "architecture": "Amazon API Gateway (HTTP API v2) -> AWS Lambda (Python 3.12, 128MB, ARM64) -> Amazon DynamoDB",
+        "aws_region": "ap-south-1",
+        "total_requests": stats["total_requests"],
+        "successful_requests": stats["successful_requests"],
+        "failed_requests": stats["failed_requests"],
+        "cold_start_count": stats["cold_start_count"],
+        "warm_count": stats["warm_count"],
+        "unknown_count": stats["unknown_count"],
+        "statistics": stats,
+        "cost_model": cost_model,
+        "results": results
+    }
+
+    json_path = DATA_DIR / "cold_start_warm_benchmark.json"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(summary_data, f, indent=2)
+    print(f"✓ Benchmark JSON data saved: {json_path}")
+
+    # 6. Generate CSV and XLSX
+    generate_csv_and_xlsx(results, stats, cost_model)
+
+    # 7. Generate Visualizations
+    plot_visualizations(results, stats, cost_model)
+
+    print("\n=== Benchmark Summary ===")
+    print(f"Experiment ID:        {experiment_id}")
+    print(f"Total Requests:       {stats['total_requests']} (Success: {stats['successful_requests']}, Failed: {stats['failed_requests']})")
+    print(f"Cold Starts Observed: {stats['cold_start_count']}")
+    if stats['cold_start']['observed']:
+        print(f"Cold Start Latency:   {stats['cold_start']['display_latency']}")
+    else:
+        print(f"Cold Start Latency:   Not observed (all requests served by warm container)")
+    print(f"Warm Median (p50):    {stats['warm']['p50_ms']} ms")
+    print(f"Warm p95:             {stats['warm']['p95_ms']} ms")
+    print(f"Speedup Warm vs Cold: {stats['speedup_display']}")
+    print(f"Serverless Cost/1k:   ${cost_model['total_serverless_cost_per_1k_usd']}")
+    print(f"EC2 Monolith Cost/1k: ${cost_model['ec2_monolith_cost_per_1k_usd']}")
+    print(f"Modeled Cost Savings: {cost_model['modeled_savings_vs_monolith_pct']}%")
+
+if __name__ == "__main__":
+    main()
